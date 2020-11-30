@@ -89,7 +89,9 @@ target/
 .mypy_cache/
 
 # Specific folders
+images
 
 # pycaret
 catboost_info
 learning_rate_*
+mlruns
