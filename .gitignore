@@ -90,6 +90,8 @@ target/
 
 # Specific folders
 images
+docs
+models
 
 # pycaret
 catboost_info
