@@ -2,6 +2,7 @@
 # Data structures
 import pandas as pd
 import numpy as np
+import pickle
 
 # OS library
 from os import path
@@ -39,7 +40,8 @@ class BuildFeatures(object):
     def __init__(self,
                  dataset:object,
                  train_date_range:tuple=('2017-01-01','2019-12-31'),
-                 test_date_range:tuple=('2020-01-01','2020-12-31')):
+                 test_date_range:tuple=('2020-01-01','2020-12-31'),
+                 verbose=False):
 
         ###################################
         #           Parameters
@@ -48,24 +50,48 @@ class BuildFeatures(object):
         self.train_date_max = train_date_range[1]
         self.test_date_min  = test_date_range[0]
         self.test_date_max  = test_date_range[1]
+        self.verbose        = verbose
         self.datatran       = dataset.datatran
         
-    def clustering_kmeans_method(self, n_cluster_method='elbow'):
+    def clustering_kmeans_method(self, n_cluster_method=None, nb_clusters=4, centers=None):
+        """Cluster samples by K-means method.
+
+        Parameters:
+
+            n_cluster_method: str or None, default=None 
+                Method to find optimal number of clusters. If set None, nb_clusters must be defined. 
+
+            nb_clusters: int, default=4
+                Number of cluster to use if n_cluster_method=None
+                
+            centers: list, default=None
+                List containing cluster centers to use in k-means method.
+
+        Returns:
+
+            df_kmeans: dataframe
+                Dataframe containing the cluster classification for each sample.
+        """
+        
+#         df_kmeans = self.dataset[['latitude', 'longitude', 'risco_morte']]
+        df_kmeans = self.dataset[['latitude', 'longitude']]
+            
         if n_cluster_method=='elbow':
             def calculate_wcss(data, n_max=10):
                 """Calculate within cluster sum-of-square.
 
                 Parameters:
 
-                data: dataframe 
-                    Data to be fitted in K-means.
+                    data: dataframe 
+                        Data to be fitted in K-means.
 
-                n_max: int, default=10
-                    Max number of clusters to test.
-
+                    n_max: int, default=10
+                        Max number of clusters to test.
+                    
                 Returns:
 
-                wcss - List containing within clusters sum-of-squares.
+                    wcss: list
+                        List containing within clusters sum-of-squares.
                 """
                 wcss = []
                 for n in range(2, n_max):
@@ -102,23 +128,33 @@ class BuildFeatures(object):
                 n_optimal = distances.index(max(distances)) + 2
 
                 return n_optimal
+            
+            if n_cluster_method=='elbow':
+                # Calculating the within clusters sum-of-squares for n_max cluster amounts
+                sum_of_squares = calculate_wcss(df_kmeans)
 
-            df_kmeans = self.dataset[['latitude', 'longitude', 'risco_morte']]
-
-            # Calculating the within clusters sum-of-squares for n_max cluster amounts
-            sum_of_squares = calculate_wcss(df_kmeans)
-
-            # Calculating the optimal number of clusters
-            n_optimal = optimal_number_of_clusters(sum_of_squares)
+                # Calculating the optimal number of clusters
+                nb_clusters = optimal_number_of_clusters(sum_of_squares)
 
             # Running kmeans to our optimal number of clusters
-            kmeans = KMeans(n_clusters=n_optimal, random_state=42)
+            kmeans = KMeans(n_clusters=nb_clusters, random_state=42)
             df_kmeans['cluster_coords'] = kmeans.fit_predict(df_kmeans)
-
-            df_kmeans['cluster_coords'].value_counts().plot(kind='bar', title='Qtde amostras por cluster')
+            
+            centers = kmeans.cluster_centers_
+            
+            # Save cluster centers
+            f = open('../data/processed/k_means_centers.pckl', 'wb')
+            pickle.dump(self.centers, f)
+            f.close()
+            
+#             df_kmeans['cluster_coords'].value_counts().plot(kind='bar', title='Qtde amostras por cluster')
 
             return df_kmeans
-        return None
+
+        else:
+            kmeans = KMeans(n_clusters=len(centers), random_state=42, init=centers).fit(df_kmeans)
+            df_kmeans['cluster_coords'] = kmeans.predict(df_kmeans)
+        return df_kmeans
 
     def weekday_process(self, weekday_column):
         """Rename weekday column values.
@@ -139,7 +175,7 @@ class BuildFeatures(object):
                 self.dataset[weekday_column].str.contains('qua'),
                 self.dataset[weekday_column].str.contains('qui'),
                 self.dataset[weekday_column].str.contains('sex'),
-                self.dataset[weekday_column].str.contains('sab'),
+                self.dataset[weekday_column].str.contains('saab'),
                 self.dataset[weekday_column].str.contains('dom')
             ],
             [
@@ -148,19 +184,34 @@ class BuildFeatures(object):
             ''
         )
 
-    def create_risk_feature(self, days_to_analyse=365):            
+    def create_risk_feature(self, days_to_analyse=365):
+        """Create risk feature. f = a(r,k)/n, where:
+        f: risk factor
+        a(r,k): number of accidents on road r and kilometer k
+        n: total number of accidents
+        Important: consider in the calcul only the number of accidents over the past 'days_to_analyse' days from the sample date
+
+        Parameters:
+            
+        days_to_analyse: int, default=365
+            Number of days in analysis window.
+
+        Returns:
+        
+        No returns. The function creates the object's risk feature.
+        """
         self.dataset['valor_1'] = 1
 
         # Criar dataset com qtd de acidentes por br/km num periodo de 1 ano ate a data do acidente em questao
-        df_acidentes_brkm = self.dataset.groupby(['br', 'km']).rolling(f'{days_to_analyse}D', on="data_inversa")['valor_1'].sum().reset_index(name='qtd_acidentes_brkm')
-        df_acidentes_brkm.drop_duplicates(subset=['br', 'km', 'data_inversa'], keep='last', inplace=True)
+        df_acidentes_brkm = self.dataset.groupby(['br', 'uf']).rolling(f'{days_to_analyse}D', on="data_inversa")['valor_1'].sum().reset_index(name='qtd_acidentes_brkm')
+        df_acidentes_brkm.drop_duplicates(subset=['br', 'uf', 'data_inversa'], keep='last', inplace=True)
 
         # Criar dataset com qtd total de acidentes num periodo de 1 ano ate a data do acidente em questao
         df_acidentes_brasil = self.dataset.groupby(['valor_1']).rolling(f'{days_to_analyse}D', on="data_inversa")['valor_1'].sum().reset_index(name='qtd_acidentes_brasil')
         df_acidentes_brasil = df_acidentes_brasil.drop_duplicates(subset='data_inversa', keep='last')[['data_inversa', 'qtd_acidentes_brasil']]
 
         # Join datasets
-        self.dataset = self.dataset.merge(df_acidentes_brkm, how='left', on=['br', 'km', 'data_inversa'])
+        self.dataset = self.dataset.merge(df_acidentes_brkm, how='left', on=['br', 'uf', 'data_inversa'])
         self.dataset = self.dataset.merge(df_acidentes_brasil, how='left', on=['data_inversa'])
 
         # Criar atributo risco
@@ -171,20 +222,35 @@ class BuildFeatures(object):
         del self.dataset['qtd_acidentes_brasil']
         del self.dataset['valor_1']
 
-    def create_fatal_risk_feature(self, days_to_analyse=365):        
-        self.dataset['contem_vitima_fatal'] = self.dataset.apply(lambda x: 1 if x['mortos'] != 0 else 0, axis=1)
+    def create_fatal_risk_feature(self, days_to_analyse=365): 
+        """Create fatal risk feature. f = a(r,k)/n, where:
+        f: fatal risk factor
+        a(r,k): number of accidents with fatal victim on road r and kilometer k
+        n: total number of accidents
+        Important: consider in the calcul only the number of accidents with fatal victim over the past 'days_to_analyse' days from the sample date
+
+        Parameters:
+            
+        days_to_analyse: int, default=365
+            Number of days in analysis window.
+
+        Returns:
+        
+        No returns. The function creates the object's fatal risk feature.
+        """
+        self.dataset['Target'] = self.dataset.apply(lambda x: 1 if x['mortos'] != 0 else 0, axis=1)
         dataset_mortes = self.dataset[self.dataset['mortos']!=0]
 
         # Criar dataset com qtd de acidentes por br/km num periodo de 1 ano ate a data do acidente em questao
-        df_acidentes_brkm = dataset_mortes.groupby(['br', 'km']).rolling(f'{days_to_analyse}D', on="data_inversa", closed='left')['contem_vitima_fatal'].sum().reset_index(name='qtd_acidentes_brkm')
-        df_acidentes_brkm.drop_duplicates(subset=['br', 'km', 'data_inversa'], keep='last', inplace=True)
+        df_acidentes_brkm = dataset_mortes.groupby(['br', 'uf']).rolling(f'{days_to_analyse}D', on="data_inversa", closed='left')['Target'].sum().reset_index(name='qtd_acidentes_brkm')
+        df_acidentes_brkm.drop_duplicates(subset=['br', 'uf', 'data_inversa'], keep='last', inplace=True)
 
         # Criar dataset com qtd total de acidentes num periodo de 1 ano ate a data do acidente em questao
-        df_acidentes_brasil = dataset_mortes.groupby(['contem_vitima_fatal']).rolling(f'{days_to_analyse}D', on="data_inversa", closed='left')['contem_vitima_fatal'].sum().reset_index(name='qtd_acidentes_brasil')
+        df_acidentes_brasil = dataset_mortes.groupby(['Target']).rolling(f'{days_to_analyse}D', on="data_inversa", closed='left')['Target'].sum().reset_index(name='qtd_acidentes_brasil')
         df_acidentes_brasil = df_acidentes_brasil.drop_duplicates(subset='data_inversa', keep='last')[['data_inversa', 'qtd_acidentes_brasil']]
 
         # Join datasets
-        self.dataset = self.dataset.merge(df_acidentes_brkm, how='left', on=['br', 'km', 'data_inversa'])
+        self.dataset = self.dataset.merge(df_acidentes_brkm, how='left', on=['br', 'uf', 'data_inversa'])
         self.dataset = self.dataset.merge(df_acidentes_brasil, how='left', on=['data_inversa'])
 
         # Criar atributo risco
@@ -196,6 +262,24 @@ class BuildFeatures(object):
         del self.dataset['qtd_acidentes_brasil']
 
     def accident_in_holiday_window(self, data_inicio_analise, data_fim_analise, days_offset_holiday=2):
+        """Create 'in holiday window' feature.
+        Feature value = 1 if accident occured in a window of 'days_offset_holiday' days before or after a holiday, otherwise 0.
+
+        Parameters:
+            
+        data_inicio_analise: datetime
+            Start date of the analysis to filter the holidays to be considered and to reduce the computational effort.
+            
+        data_fim_analise: datetime
+            Final date of the analysis to filter the holidays to be considered and to reduce the computational effort.
+            
+        days_offset_holiday: int, default=2
+            Number of days in the analysis window.
+
+        Returns:
+        
+        No returns. The function creates the object's 'in holiday window' feature.
+        """
         df_holidays = pd.read_parquet('../data/raw/holidays.parquet')
 
         df_holidays["data"] = pd.to_datetime(df_holidays["data"], format='%d/%m/%Y')
@@ -266,7 +350,9 @@ class BuildFeatures(object):
         
         self.create_risk_feature(days_to_analyse=365)
         self.create_fatal_risk_feature(days_to_analyse=365)
-        print('Fatal risk calculated')
+        
+        if self.verbose:
+            print('Fatal risk calculated')
         
         # Remover dados de acidentes do primeiro ano de analise por nao haver dados do ano antecedente para criar o atributo risco (lembrar que a analise é feita em um periodo de 1 ano)
         self.dataset = self.dataset.loc[self.dataset['data_inversa'] >= self.train_date_min, :]
@@ -274,34 +360,36 @@ class BuildFeatures(object):
         # Transformar dia da semana em dado categórico numérico
         self.weekday_process(weekday_column='dia_semana')
 
-        # Transformar coordenadas (latitude, longitude) em espaço cartesiano
-        self.dataset['coordenada_x'] = np.cos(self.dataset['latitude']) * np.cos(self.dataset['longitude'])
-        self.dataset['coordenada_y'] = np.cos(self.dataset['latitude']) * np.sin(self.dataset['longitude'])
-        self.dataset['coordenada_z'] = np.sin(self.dataset['latitude'])
+#         # Transformar coordenadas (latitude, longitude) em espaço cartesiano
+#         self.dataset['coordenada_x'] = np.cos(self.dataset['latitude']) * np.cos(self.dataset['longitude'])
+#         self.dataset['coordenada_y'] = np.cos(self.dataset['latitude']) * np.sin(self.dataset['longitude'])
+#         self.dataset['coordenada_z'] = np.sin(self.dataset['latitude'])
 
         # Criar atributo que indica distância em dias entre data do acidente e data de feriados
         # Considerar feriados apenas entre a data de analise
-
         self.accident_in_holiday_window(data_inicio_analise=self.train_date_min, 
                                         data_fim_analise=self.train_date_max, 
                                         days_offset_holiday=2)
-        print('Accident in holiday window calculated')
-
-        # Remoção de outliers
-        z_score = stats.zscore(self.dataset['pessoas'])
-        abs_z_scores = np.abs(z_score)
-        filtered_entries = (abs_z_scores < 3)
-        #USAR A LINHA DE BAIXO SE AUMENTAR QTD DE COLUNAS NO ZSCORE
-        #filtered_entries = (abs_z_scores < 3).all(axis=1)
-        self.dataset = self.dataset[filtered_entries]
-        print('Ouliers removed')
+        
+        if self.verbose:
+            print('Accident in holiday window calculated')
 
         # Clustering using K-means method
-        df_kmeans = self.clustering_kmeans_method(n_cluster_method='elbow')
-        self.dataset = self.dataset.merge(df_kmeans[['latitude', 'longitude', 'risco_morte', 'cluster_coords']], how='left', on=['latitude','longitude','risco_morte'])
+        ######################################## ARRUMAR ###################################################
+        f = open('../data/processed/k_means_centers.pckl', 'rb')
+        k_means_centers = pickle.load(f)
+        f.close()
+        ####################################################################################################
+
+        df_kmeans = self.clustering_kmeans_method(centers=k_means_centers)
+        
+#         self.dataset = self.dataset.merge(df_kmeans[['latitude', 'longitude', 'risco_morte', 'cluster_coords']], how='left', on=['latitude','longitude','risco_morte'])
+        self.dataset = self.dataset.merge(df_kmeans[['latitude', 'longitude', 'cluster_coords']], how='left', on=['latitude','longitude'])
         self.dataset.drop_duplicates(subset='id', inplace=True)
-        fig = px.scatter(self.dataset, x="longitude", y="latitude", color="cluster_coords", title='Cluster de coordenadas', width=500, height=500)
-        fig.show()
+        
+        if self.verbose:
+            fig = px.scatter(self.dataset, x="longitude", y="latitude", color="cluster_coords", title='Cluster de coordenadas', width=500, height=500)
+            fig.show()
 
         # Drop unwanted columns
         drop_columns = [
